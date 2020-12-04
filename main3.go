@@ -105,7 +105,7 @@ func canDirect(ipaddr string) bool {
 	return true
 }
 
-func main() {
+func main3() {
 	if false {
 		LookupHost2("zhihu.com")
 		LookupHost2("google.com")
