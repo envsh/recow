@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/ini.v1"
 )
@@ -177,19 +178,41 @@ func (this *Recow) serve() error {
 		if err != nil {
 			return err
 		}
-		go this.dotop(c)
+		go func() {
+			err := this.dotop(c)
+			if false {
+				gopp.ErrPrint(err)
+			}
+		}()
 	}
 	return nil
 }
 
 type pcontext struct {
-	cc    net.Conn
-	req   *http.Request
-	upc   net.Conn
-	retry int
+	cc       net.Conn
+	req      *http.Request
+	upc      net.Conn
+	retry    int
+	btime    time.Time
+	donetm12 time.Time // io.Copy(c1,c2) finish time
+	donetm21 time.Time // io.Copy(c2,c1) finish time
+	xchlen12 int64
+	xchlen21 int64
 }
 
-func (this *pcontext) connectup(lber balancer) error {
+func newpcontext(c net.Conn, r *http.Request) *pcontext {
+	this := &pcontext{cc: c, req: r}
+	this.btime = time.Now()
+	return this
+}
+func (this *pcontext) istimeouted() bool {
+	return time.Since(this.btime) > 15*time.Second
+}
+func (this *pcontext) since() time.Duration {
+	return time.Since(this.btime)
+}
+
+func (this *pcontext) connectpxyup(lber balancer) error {
 	defer func() { this.retry++ }()
 	itemx := lber.Sel(this.retry)
 	item := itemx.(string)
@@ -200,31 +223,68 @@ func (this *pcontext) connectup(lber balancer) error {
 	return err
 }
 
+// ensure have port part
+func ensureHostport(scheme string, host string) string {
+	if strings.Index(host, ":") > 0 {
+		return host
+	}
+	if scheme == "https" {
+		return host + ":443"
+	}
+	if scheme == "http" {
+		return host + ":80"
+	}
+	log.Println("wtt not supported", scheme, host)
+	return host
+}
+func (this *pcontext) connectdirup() error {
+	defer func() { this.retry++ }()
+	r := this.req
+	rehost := ensureHostport(r.URL.Scheme, r.URL.Host)
+	upc, err := net.Dial("tcp", rehost)
+	gopp.ErrPrint(err)
+	this.upc = upc
+	return err
+}
+
 func (this *Recow) dotop(c net.Conn) error {
+	//defer c.Close()
 	reader := bufio.NewReader(c)
 	r, err := http.ReadRequest(reader)
-	gopp.ErrPrint(err)
-	log.Println(r.Method, r.URL, r.Header)
+	gopp.ErrPrint(err, "ReadRequest error", reader.Size())
+	if err != nil {
+		return fmt.Errorf("ReadRequest error %v %v", reader.Size(), err)
+	}
+	log.Println(r.Method, r.URL, r.Header, r.ContentLength)
 	domain := strings.Split(r.URL.Host, ":")[0]
 	ipaddr, err := LookupHost2(domain)
 	gopp.ErrPrint(err, r.URL.Host)
 
-	pctx := &pcontext{c, r, nil, 0}
+	pctx := newpcontext(c, r)
 	candir := canDirect2(ipaddr)
 	for {
+		if pctx.istimeouted() {
+			break
+		}
 		if candir {
-			log.Println("DIRECT", r.URL)
+			err = pctx.connectdirup()
+			gopp.ErrPrint(err)
+		} else {
+			err = pctx.connectpxyup(this.lber)
+			gopp.ErrPrint(err, pctx.retry, this.lber.Len())
+		}
+		if err != nil {
+			continue
+		}
+
+		if candir {
+			log.Println("DIRECT", r.URL, pctx.upc.RemoteAddr())
 			if r.Method == http.MethodConnect {
 				err = this.dodirsec(pctx)
 			} else {
 				err = this.dodirtxt(pctx)
 			}
 		} else {
-			err = pctx.connectup(this.lber)
-			gopp.ErrPrint(err, pctx.retry, this.lber.Len())
-			if err != nil {
-				continue
-			}
 			log.Println("PROXY", r.URL, pctx.upc.RemoteAddr(), pctx.retry)
 			if r.Method == http.MethodConnect {
 				err = this.dopxysec(pctx)
@@ -234,27 +294,57 @@ func (this *Recow) dotop(c net.Conn) error {
 		}
 		break
 	}
+	log.Println("release", r.Method, r.URL,
+		"cclen", r.ContentLength, pctx.since(), err)
 	return err
 }
 
+func iobicopy(c1 net.Conn, c2 net.Conn) (err12 error, err21 error) {
+	var err error
+	var resch = make(chan error, 0)
+	go func() {
+		_, err := io.Copy(c1, c2)
+		err12 = err
+		resch <- err
+	}()
+	go func() {
+		_, err := io.Copy(c2, c1)
+		err21 = err
+		resch <- err
+	}()
+	for i := 0; i < 2; i++ {
+		err1 := <-resch
+		if err != nil {
+			err = err1
+		}
+	}
+	return
+}
+
 func (this *Recow) dodirsec(pctx *pcontext) error {
-	c, r := pctx.cc, pctx.req
+	c, r, upc := pctx.cc, pctx.req, pctx.upc
+	_ = r
 
-	c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
-	upc, err := net.Dial("tcp", r.URL.Host)
-	gopp.ErrPrint(err)
-	go io.Copy(c, upc)
-	go io.Copy(upc, c)
+	wn, err := c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+	gopp.ErrPrint(err, wn)
 
-	return nil
+	// go io.Copy(c, upc)
+	// go io.Copy(upc, c)
+	err12, err21 := iobicopy(c, upc)
+	if err12 != nil {
+		err = err12
+	}
+	if err21 != nil {
+		err = err21
+	}
+
+	return err
 }
 
 func (this *Recow) dodirtxt(pctx *pcontext) error {
-	c, r := pctx.cc, pctx.req
+	c, r, upc := pctx.cc, pctx.req, pctx.upc
+	_ = r
 
-	rehost := r.URL.Host + ":80"
-	upc, err := net.Dial("tcp", rehost)
-	gopp.ErrPrint(err, rehost)
 	reqstr := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, r.URL.Path)
 	reqstr += fmt.Sprintf("Host: %s\r\n", r.URL.Host)
 	for key, hline := range r.Header {
@@ -267,12 +357,19 @@ func (this *Recow) dodirtxt(pctx *pcontext) error {
 	reqstr += fmt.Sprintf("\r\n")
 	log.Print("> " + strings.Replace(reqstr, "\n", "\n> ", -1))
 	wn, err := upc.Write([]byte(reqstr))
-	log.Println(">", wn, rehost)
+	log.Println(">", wn, ensureHostport(r.URL.Scheme, r.URL.Host))
 
-	go io.Copy(c, upc)
-	go io.Copy(upc, c)
+	// go io.Copy(c, upc)
+	// go io.Copy(upc, c)
+	err12, err21 := iobicopy(c, upc)
+	if err12 != nil {
+		err = err12
+	}
+	if err21 != nil {
+		err = err21
+	}
 
-	return nil
+	return err
 }
 
 func (this *Recow) dopxysec(pctx *pcontext) error {
@@ -280,11 +377,19 @@ func (this *Recow) dopxysec(pctx *pcontext) error {
 
 	fwdreq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n",
 		r.URL.Host, r.URL.Host)
-	upc.Write([]byte(fwdreq))
-	go io.Copy(c, upc)
-	go io.Copy(upc, c)
+	_, err := upc.Write([]byte(fwdreq))
 
-	return nil
+	// go io.Copy(c, upc)
+	// go io.Copy(upc, c)
+	err12, err21 := iobicopy(c, upc)
+	if err12 != nil {
+		err = err12
+	}
+	if err21 != nil {
+		err = err21
+	}
+
+	return err
 }
 func (this *Recow) dopxytxt(pctx *pcontext) error {
 	c, r, upc := pctx.cc, pctx.req, pctx.upc
@@ -301,12 +406,19 @@ func (this *Recow) dopxytxt(pctx *pcontext) error {
 	}
 	reqstr += fmt.Sprintf("\r\n")
 	log.Println(reqstr)
-	upc.Write([]byte(reqstr))
+	_, err := upc.Write([]byte(reqstr))
 
-	go io.Copy(c, upc)
-	go io.Copy(upc, c)
+	// go io.Copy(c, upc)
+	// go io.Copy(upc, c)
+	err12, err21 := iobicopy(c, upc)
+	if err12 != nil {
+		err = err12
+	}
+	if err21 != nil {
+		err = err21
+	}
 
-	return nil
+	return err
 }
 
 func main() {

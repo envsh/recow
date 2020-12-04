@@ -74,7 +74,9 @@ func canDirect2(ipaddr string) bool {
 	gi := gig
 	if gi != nil {
 		country, netmask := gi.GetCountry(ipaddr)
-		log.Println(ipaddr, country, netmask)
+		if false {
+			log.Println(ipaddr, country, netmask)
+		}
 		if country == "CN" {
 			return true
 		}
