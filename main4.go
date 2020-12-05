@@ -111,14 +111,21 @@ type upstream struct {
 type Recow struct {
 	cfgdir     string
 	rcfile     string
+	rercfile   string // recow defined rc
 	directfile string
 	proxyfile  string
 	logfile    string
+	geoipfile  string // geoipv1 country database, /usr/share/GeoIP/GeoIP.dat
 	lsner      net.Listener
 
 	ups map[string]*upstream // urlobj =>
 
 	lber balancer
+
+	// stats
+	concnt int
+	upsize int64
+	dlsize int64
 }
 
 var recow = &Recow{ups: map[string]*upstream{}}
@@ -128,6 +135,8 @@ func (this *Recow) init() error {
 	this.rcfile = this.cfgdir + "/rc"
 	this.directfile = this.cfgdir + "/direct"
 	this.proxyfile = this.cfgdir + "/proxy"
+
+	this.lber = newBackupBalance()
 
 	cfg, err := ini.ShadowLoad(this.rcfile)
 	gopp.ErrPrint(err, this.rcfile)
@@ -146,6 +155,8 @@ func (this *Recow) init() error {
 			gopp.ErrPrint(err)
 			log.Println("Listen on", uo.Host)
 		case "loadBalance":
+
+			// cow 做了配置项名字检查，无法直接重用现有的配置文件，还是需要新的配置文件名字
 		case "loadBalance2":
 			switch vals[0] {
 			case "backup":
@@ -154,6 +165,9 @@ func (this *Recow) init() error {
 			case "hash":
 			}
 		case "logFile":
+		case "geoipFile":
+			this.geoipfile = vals[0]
+			geoipfile = vals[0]
 		case "judgeByIP": // default behaviour
 		case "proxy":
 			for _, val := range vals {
@@ -166,6 +180,14 @@ func (this *Recow) init() error {
 			}
 			log.Println("ups", len(this.ups), "lber", this.lber.Len())
 		}
+	}
+
+	// simple config check
+	if this.geoipfile == "" {
+		log.Println("WARN geoipFile not set")
+	}
+	if len(this.ups) == 0 {
+		log.Println("WARN upstream proxy(s) not set")
 	}
 
 	return nil
@@ -259,6 +281,9 @@ func (this *Recow) dotop(c net.Conn) error {
 	domain := strings.Split(r.URL.Host, ":")[0]
 	ipaddr, err := LookupHost2(domain)
 	gopp.ErrPrint(err, r.URL.Host)
+	if err != nil {
+		return err
+	}
 
 	pctx := newpcontext(c, r)
 	candir := canDirect2(ipaddr)
@@ -294,22 +319,36 @@ func (this *Recow) dotop(c net.Conn) error {
 		}
 		break
 	}
-	log.Println("release", r.Method, r.URL,
-		"cclen", r.ContentLength, pctx.since(), err)
+
+	this.updatestats(pctx)
+	log.Println("release", r.Method, r.URL, "cclen", r.ContentLength,
+		pctx.since(), "DL", pctx.xchlen12, "UP", pctx.xchlen21,
+		"loclink", pctx.donetm12.Sub(pctx.btime),
+		"remlink", pctx.donetm21.Sub(pctx.btime), err)
 	return err
 }
 
-func iobicopy(c1 net.Conn, c2 net.Conn) (err12 error, err21 error) {
+func (this *Recow) updatestats(pctx *pcontext) {
+	this.concnt++
+	this.dlsize += pctx.xchlen12
+	this.upsize += pctx.xchlen21
+}
+
+func iobicopy(pctx *pcontext, c1 net.Conn, c2 net.Conn) (err12 error, err21 error) {
 	var err error
 	var resch = make(chan error, 0)
 	go func() {
-		_, err := io.Copy(c1, c2)
+		xn, err := io.Copy(c1, c2)
 		err12 = err
+		pctx.xchlen12 = xn
+		pctx.donetm12 = time.Now()
 		resch <- err
 	}()
 	go func() {
-		_, err := io.Copy(c2, c1)
+		xn, err := io.Copy(c2, c1)
 		err21 = err
+		pctx.xchlen21 = xn
+		pctx.donetm21 = time.Now()
 		resch <- err
 	}()
 	for i := 0; i < 2; i++ {
@@ -330,7 +369,7 @@ func (this *Recow) dodirsec(pctx *pcontext) error {
 
 	// go io.Copy(c, upc)
 	// go io.Copy(upc, c)
-	err12, err21 := iobicopy(c, upc)
+	err12, err21 := iobicopy(pctx, c, upc)
 	if err12 != nil {
 		err = err12
 	}
@@ -361,7 +400,7 @@ func (this *Recow) dodirtxt(pctx *pcontext) error {
 
 	// go io.Copy(c, upc)
 	// go io.Copy(upc, c)
-	err12, err21 := iobicopy(c, upc)
+	err12, err21 := iobicopy(pctx, c, upc)
 	if err12 != nil {
 		err = err12
 	}
@@ -381,7 +420,7 @@ func (this *Recow) dopxysec(pctx *pcontext) error {
 
 	// go io.Copy(c, upc)
 	// go io.Copy(upc, c)
-	err12, err21 := iobicopy(c, upc)
+	err12, err21 := iobicopy(pctx, c, upc)
 	if err12 != nil {
 		err = err12
 	}
@@ -410,7 +449,7 @@ func (this *Recow) dopxytxt(pctx *pcontext) error {
 
 	// go io.Copy(c, upc)
 	// go io.Copy(upc, c)
-	err12, err21 := iobicopy(c, upc)
+	err12, err21 := iobicopy(pctx, c, upc)
 	if err12 != nil {
 		err = err12
 	}

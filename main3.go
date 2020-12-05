@@ -40,9 +40,15 @@ func LookupHost2(host string) (addr string, err error) {
 	addrs, err := net.LookupHost(host)
 	gopp.ErrPrint(err)
 	log.Println(host, addrs)
+	if err != nil {
+		return
+	}
 	addr = addrs[0]
 	return
 }
+
+// dns:
+// 162.159.46.1 162.159.36.1 , 162.159.132.53 , cloudflare-dns.com
 func LookupHost(host string) (addr string, err error) {
 
 	m1 := &dns.Msg{}
@@ -59,9 +65,10 @@ func LookupHost(host string) (addr string, err error) {
 }
 
 var gig *geoip.GeoIP
+var geoipfile string = "/usr/share/GeoIP/GeoIP.dat"
 
 func canDirect2(ipaddr string) bool {
-	file := "/usr/share/GeoIP/GeoIP.dat"
+	file := geoipfile
 
 	if gig == nil {
 		gi, err := geoip.Open(file)

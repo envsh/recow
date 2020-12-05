@@ -1,4 +1,12 @@
 
+### Features
+
+* 自动根据IP国家分流
+* 支持HTTP/HTTPS 代理请求
+* 支持负载均衡，backup
+* 指定DNS服务器
+* DoH支持
+
 ### 上游代理负载均衡
 
 * 循环
@@ -9,6 +17,7 @@
 
 ### 简单的http(s)代理分流
 
+```
 if candirect {
   if reqmth == "CONNECT" { // https
      response HTTP/1.1 200 estab
@@ -32,4 +41,21 @@ if candirect {
      bidirection io copy
   }
 }
+```
+
+
+### 通用DNS服务器
+* 1.1.1.1 速度快，但现在屏蔽严重了
+* 8.8.8.8 
+* 9.9.9.9
+
+### 国内DNS服务器
+
+* 114.114.114.114
+
+### 国内DoH服务器
+
+* https://dns.rubyfish.cn/dns-query
+* https://dns.alidns.com/dns-query
+* https://doh.pub/dns-query
 
