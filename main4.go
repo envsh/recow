@@ -121,6 +121,7 @@ type Recow struct {
 	ups map[string]*upstream // urlobj =>
 
 	lber balancer
+	dd   *DNSDig
 
 	// stats
 	concnt int
@@ -179,6 +180,13 @@ func (this *Recow) init() error {
 				}
 			}
 			log.Println("ups", len(this.ups), "lber", this.lber.Len())
+		case "dns": // TODO
+			// udp://127.0.0.1:53
+			// tcp://127.0.0.1:53
+			// tls://127.0.0.1:53
+			// doh://127.0.0.1:53
+		case "ipv6":
+		case "ipv6only":
 		}
 	}
 
@@ -190,6 +198,7 @@ func (this *Recow) init() error {
 		log.Println("WARN upstream proxy(s) not set")
 	}
 
+	this.dd = newDNSDig()
 	return nil
 }
 
@@ -268,6 +277,17 @@ func (this *pcontext) connectdirup() error {
 	this.upc = upc
 	return err
 }
+func (this *pcontext) connectdirup2(ipaddr string) error {
+	defer func() { this.retry++ }()
+	r := this.req
+	rehost := ensureHostport(r.URL.Scheme, r.URL.Host)
+	arr := strings.Split(rehost, ":")
+	rehost = fmt.Sprintf("%s:%s", ipaddr, arr[1])
+	upc, err := net.Dial("tcp", rehost)
+	gopp.ErrPrint(err)
+	this.upc = upc
+	return err
+}
 
 func (this *Recow) dotop(c net.Conn) error {
 	//defer c.Close()
@@ -279,7 +299,8 @@ func (this *Recow) dotop(c net.Conn) error {
 	}
 	log.Println(r.Method, r.URL, r.Header, r.ContentLength)
 	domain := strings.Split(r.URL.Host, ":")[0]
-	ipaddr, err := LookupHost2(domain)
+	// ipaddr, err := LookupHost2(domain)
+	ipaddr, err := this.dd.Lookup(domain)
 	gopp.ErrPrint(err, r.URL.Host)
 	if err != nil {
 		return err
@@ -292,13 +313,14 @@ func (this *Recow) dotop(c net.Conn) error {
 			break
 		}
 		if candir {
-			err = pctx.connectdirup()
-			gopp.ErrPrint(err)
+			err = pctx.connectdirup2(ipaddr)
+			gopp.ErrPrint(err, r.URL.Host)
 		} else {
 			err = pctx.connectpxyup(this.lber)
-			gopp.ErrPrint(err, pctx.retry, this.lber.Len())
+			gopp.ErrPrint(err, r.URL.Host, pctx.retry, this.lber.Len())
 		}
 		if err != nil {
+			time.Sleep(1 * time.Second)
 			continue
 		}
 

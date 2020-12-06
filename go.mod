@@ -11,6 +11,7 @@ require (
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
 	github.com/cheekybits/genny v1.0.0 // indirect
 	github.com/emirpasic/gods v1.12.0 // indirect
+	github.com/hashicorp/golang-lru v0.5.4
 	github.com/huandu/xstrings v1.3.2 // indirect
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/lytics/base62 v0.0.0-20180808010106-0ee4de5a5d6d // indirect

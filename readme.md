@@ -4,7 +4,7 @@
 * 自动根据IP国家分流
 * 支持HTTP/HTTPS 代理请求
 * 支持负载均衡，backup
-* 指定DNS服务器
+* 指定DNS服务器, udp,tcp,tls,doh,
 * DoH支持
 
 ### 上游代理负载均衡
