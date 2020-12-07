@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gopp"
 	"io"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -115,10 +116,12 @@ type Recow struct {
 	directfile string
 	proxyfile  string
 	logfile    string
-	geoipfile  string // geoipv1 country database, /usr/share/GeoIP/GeoIP.dat
-	lsner      net.Listener
+	geoipfile  string               // geoipv1 country database, /usr/share/GeoIP/GeoIP.dat
+	ups        map[string]*upstream // urlobj =>
+	directed   map[string]bool      // domain =>
+	blocked    map[string]bool      // domain =>
 
-	ups map[string]*upstream // urlobj =>
+	lsner net.Listener
 
 	lber balancer
 	dd   *DNSDig
@@ -132,6 +135,8 @@ type Recow struct {
 var recow = &Recow{ups: map[string]*upstream{}}
 
 func (this *Recow) init() error {
+	this.directed = map[string]bool{}
+	this.blocked = map[string]bool{}
 	this.cfgdir = os.Getenv("HOME") + "/.cow"
 	this.rcfile = this.cfgdir + "/rc"
 	this.directfile = this.cfgdir + "/direct"
@@ -189,6 +194,7 @@ func (this *Recow) init() error {
 		case "ipv6only":
 		}
 	}
+	this.parseConfig()
 
 	// simple config check
 	if this.geoipfile == "" {
@@ -200,6 +206,86 @@ func (this *Recow) init() error {
 
 	this.dd = newDNSDig()
 	return nil
+}
+
+func (this *Recow) parseConfig() {
+	this.parserc()
+	this.parseDirected()
+	this.parseBlocked()
+
+	for item, _ := range this.blocked {
+		if _, ok := this.directed[item]; ok {
+			log.Println("WARN both direct & proxy contains", item)
+		}
+	}
+}
+func (this *Recow) parserc() {
+
+}
+func (this *Recow) parseDirected() {
+	bcc, err := ioutil.ReadFile(this.directfile)
+	gopp.ErrPrint(err)
+	lines := strings.Split(string(bcc), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		this.directed[line] = true
+	}
+}
+func (this *Recow) parseBlocked() {
+	bcc, err := ioutil.ReadFile(this.proxyfile)
+	gopp.ErrPrint(err)
+	lines := strings.Split(string(bcc), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		this.blocked[line] = true
+	}
+}
+
+func domainMatch(lst map[string]bool, domain string) bool {
+	fields := strings.Split(domain, ".")
+	// log.Println(domain, "match", len(lst), len(fields), fields)
+	matched := false
+	for i := 0; i < len(fields); i++ {
+		if len(fields[i:]) <= 1 {
+			break
+		}
+		subdm := strings.Join(fields[i:], ".")
+		_, ok := lst[subdm]
+		// log.Println(domain, subdm, ok, len(lst))
+		if ok {
+			matched = true
+			break
+		}
+	}
+	// log.Println("matched", domain, matched, len(lst))
+	return matched
+}
+
+func (this *Recow) canDirect(domain string, ipaddr string) bool {
+	blocked := domainMatch(this.blocked, domain)
+	if blocked {
+		return false
+	}
+
+	directed := domainMatch(this.directed, domain)
+	if directed {
+		return true
+	}
+
+	candirip := canDirect2(ipaddr)
+	return candirip
 }
 
 func (this *Recow) serve() error {
@@ -297,7 +383,7 @@ func (this *Recow) dotop(c net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("ReadRequest error %v %v", reader.Size(), err)
 	}
-	log.Println(r.Method, r.URL, r.Header, r.ContentLength)
+	log.Println(r.Method, r.URL, gopp.MapKeys(r.Header), r.ContentLength)
 	domain := strings.Split(r.URL.Host, ":")[0]
 	// ipaddr, err := LookupHost2(domain)
 	ipaddr, err := this.dd.Lookup(domain)
@@ -307,7 +393,8 @@ func (this *Recow) dotop(c net.Conn) error {
 	}
 
 	pctx := newpcontext(c, r)
-	candir := canDirect2(ipaddr)
+	// candir := canDirect2(ipaddr)
+	candir := this.canDirect(domain, ipaddr)
 	for {
 		if pctx.istimeouted() {
 			break
