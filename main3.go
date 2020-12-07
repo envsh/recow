@@ -84,7 +84,7 @@ func canDirect2(ipaddr string) bool {
 		if false {
 			log.Println(ipaddr, country, netmask)
 		}
-		if country == "CN" {
+		if country == "CN" || country == "HK" {
 			return true
 		}
 	}

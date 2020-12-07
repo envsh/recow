@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/ini.v1"
@@ -305,10 +306,31 @@ func (this *Recow) serve() error {
 	return nil
 }
 
+//safe shutdown conn
+type ssconn struct {
+	net.Conn
+	closed atomic.Value
+}
+
+func newssconn(c net.Conn) *ssconn {
+	this := &ssconn{Conn: c}
+	this.closed.Store(false)
+	return this
+}
+func (this *ssconn) shutdown() error {
+	if this.closed.Load().(bool) {
+		return nil
+	}
+	this.closed.Store(true)
+	return this.Conn.Close()
+}
+
 type pcontext struct {
 	cc       net.Conn
+	scc      *ssconn
 	req      *http.Request
 	upc      net.Conn
+	supc     *ssconn
 	retry    int
 	btime    time.Time
 	donetm12 time.Time // io.Copy(c1,c2) finish time
@@ -319,6 +341,7 @@ type pcontext struct {
 
 func newpcontext(c net.Conn, r *http.Request) *pcontext {
 	this := &pcontext{cc: c, req: r}
+	this.scc = newssconn(c)
 	this.btime = time.Now()
 	return this
 }
@@ -336,8 +359,22 @@ func (this *pcontext) connectpxyup(lber balancer) error {
 	uo, err := url.Parse(item)
 	gopp.ErrPrint(err)
 	c, err := net.Dial("tcp", uo.Host)
-	this.upc = c
+	this.setupc(c)
 	return err
+}
+
+func (this *pcontext) setupc(c net.Conn) {
+	if c == nil {
+		return
+	}
+	if this.upc != nil {
+		log.Println("upc not nil???", this.upc, this.supc)
+		if this.supc != nil {
+			this.supc.shutdown()
+		}
+	}
+	this.upc = c
+	this.supc = newssconn(c)
 }
 
 // ensure have port part
@@ -360,7 +397,7 @@ func (this *pcontext) connectdirup() error {
 	rehost := ensureHostport(r.URL.Scheme, r.URL.Host)
 	upc, err := net.Dial("tcp", rehost)
 	gopp.ErrPrint(err)
-	this.upc = upc
+	this.setupc(upc)
 	return err
 }
 func (this *pcontext) connectdirup2(ipaddr string) error {
@@ -371,28 +408,43 @@ func (this *pcontext) connectdirup2(ipaddr string) error {
 	rehost = fmt.Sprintf("%s:%s", ipaddr, arr[1])
 	upc, err := net.Dial("tcp", rehost)
 	gopp.ErrPrint(err)
-	this.upc = upc
+	this.setupc(upc)
 	return err
+}
+func (this *pcontext) cleanup() {
+	this.scc.shutdown()
+	if this.supc != nil {
+		this.supc.shutdown()
+	}
+	this.req.Body.Close()
 }
 
 func (this *Recow) dotop(c net.Conn) error {
 	//defer c.Close()
 	reader := bufio.NewReader(c)
 	r, err := http.ReadRequest(reader)
-	gopp.ErrPrint(err, "ReadRequest error", reader.Size())
+	bufed := reader.Buffered()
 	if err != nil {
-		return fmt.Errorf("ReadRequest error %v %v", reader.Size(), err)
+		bcc := make([]byte, bufed)
+		reader.Read(bcc)
+		gopp.ErrPrint(err, "ReadRequest error", bufed, gopp.SubStr(string(bcc), 64))
 	}
-	log.Println(r.Method, r.URL, gopp.MapKeys(r.Header), r.ContentLength)
+	if err != nil {
+		c.Close()
+		return fmt.Errorf("ReadRequest error %v %v", bufed, err)
+	}
+	pctx := newpcontext(c, r)
+	defer pctx.cleanup()
+
+	// log.Println(r.Method, r.URL, gopp.MapKeys(r.Header), r.ContentLength)
 	domain := strings.Split(r.URL.Host, ":")[0]
 	// ipaddr, err := LookupHost2(domain)
 	ipaddr, err := this.dd.Lookup(domain)
-	gopp.ErrPrint(err, r.URL.Host)
+	gopp.ErrPrint(err, r.URL.Host, "cclen", this.dd.CCSize())
 	if err != nil {
 		return err
 	}
 
-	pctx := newpcontext(c, r)
 	// candir := canDirect2(ipaddr)
 	candir := this.canDirect(domain, ipaddr)
 	for {
@@ -406,20 +458,23 @@ func (this *Recow) dotop(c net.Conn) error {
 			err = pctx.connectpxyup(this.lber)
 			gopp.ErrPrint(err, r.URL.Host, pctx.retry, this.lber.Len())
 		}
+		if err != nil && gopp.ErrHave(err, "connection refused") {
+			break
+		}
 		if err != nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
 		if candir {
-			log.Println("DIRECT", r.URL, pctx.upc.RemoteAddr())
+			log.Println("DIRECT", r.Method, r.URL, pctx.upc.RemoteAddr())
 			if r.Method == http.MethodConnect {
 				err = this.dodirsec(pctx)
 			} else {
 				err = this.dodirtxt(pctx)
 			}
 		} else {
-			log.Println("PROXY", r.URL, pctx.upc.RemoteAddr(), pctx.retry)
+			log.Println("PROXY", r.Method, r.URL, pctx.upc.RemoteAddr(), pctx.retry)
 			if r.Method == http.MethodConnect {
 				err = this.dopxysec(pctx)
 			} else {
@@ -431,9 +486,9 @@ func (this *Recow) dotop(c net.Conn) error {
 
 	this.updatestats(pctx)
 	log.Println("release", r.Method, r.URL, "cclen", r.ContentLength,
-		pctx.since(), "DL", pctx.xchlen12, "UP", pctx.xchlen21,
-		"loclink", pctx.donetm12.Sub(pctx.btime),
-		"remlink", pctx.donetm21.Sub(pctx.btime), err)
+		"DL", pctx.xchlen12, "UP", pctx.xchlen21,
+		"loclink", gopp.Dur2hum(pctx.donetm12.Sub(pctx.btime)),
+		"remlink", gopp.Dur2hum(pctx.donetm21.Sub(pctx.btime)), err)
 	return err
 }
 
@@ -444,8 +499,7 @@ func (this *Recow) updatestats(pctx *pcontext) {
 }
 
 func iobicopy(pctx *pcontext, c1 net.Conn, c2 net.Conn) (err12 error, err21 error) {
-	var err error
-	var resch = make(chan error, 0)
+	var resch = make(chan error, 2)
 	go func() {
 		xn, err := io.Copy(c1, c2)
 		err12 = err
@@ -460,12 +514,20 @@ func iobicopy(pctx *pcontext, c1 net.Conn, c2 net.Conn) (err12 error, err21 erro
 		pctx.donetm21 = time.Now()
 		resch <- err
 	}()
-	for i := 0; i < 2; i++ {
-		err1 := <-resch
-		if err != nil {
-			err = err1
-		}
+
+	err0 := <-resch
+	select {
+	case <-resch:
+	case <-time.After(5 * time.Second):
+		pctx.scc.shutdown()
+		pctx.supc.shutdown()
+		<-resch
 	}
+	if err0 == nil {
+		err12 = nil
+		err21 = nil
+	}
+
 	return
 }
 

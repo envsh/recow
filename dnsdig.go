@@ -38,3 +38,7 @@ func (this *DNSDig) Lookup(host string) (addr string, err error) {
 	this.rescc.Add(host, addr)
 	return
 }
+
+func (this *DNSDig) CCSize() int {
+	return this.rescc.Len()
+}
