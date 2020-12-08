@@ -435,9 +435,11 @@ func (this *Recow) dotop(c net.Conn) error {
 	}
 	pctx := newpcontext(c, r)
 	defer pctx.cleanup()
+	//log.Println(r.Method, r.URL, gopp.MapKeys(r.Header), r.ContentLength)
 
-	// log.Println(r.Method, r.URL, gopp.MapKeys(r.Header), r.ContentLength)
 	domain := strings.Split(r.URL.Host, ":")[0]
+	// TODO check ADBlock by domain
+
 	// ipaddr, err := LookupHost2(domain)
 	ipaddr, err := this.dd.Lookup(domain)
 	gopp.ErrPrint(err, r.URL.Host, "cclen", this.dd.CCSize())

@@ -6,6 +6,7 @@
 * 支持负载均衡，backup
 * 指定DNS服务器, udp,tcp,tls,doh,
 * DoH支持
+* ADblock by domain return 404
 
 ### 上游代理负载均衡
 
@@ -43,6 +44,20 @@ if candirect {
 }
 ```
 
+### ADBlock
+* 对于HTTPS只能获取到域名，所以只能使用域名过滤
+* 对于HTTP可以考虑采用资源路径过滤。
+* 该配置文件中包含easylist格式的数据文件，以及hosts格式的数据文件，需要分别处理。
+* https://github.com/AdguardTeam/AdGuardHome/blob/128229ad736fce424166dc38dcaf17486fd8f1b5/client/src/helpers/filters/filters.json
+
+### easylist 格式，
+* ! 注释
+* || 匹配地址的开头
+* |  指地址的开始或者结束
+* / 正则
+* @@ 取消拦截？
+
+完整说明：https://www.leeyiding.com/archives/50/
 
 ### 通用DNS服务器
 * 1.1.1.1 速度快，但现在屏蔽严重了
