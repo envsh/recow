@@ -537,7 +537,7 @@ func (this *Recow) dodirsec(pctx *pcontext) error {
 	c, r, upc := pctx.cc, pctx.req, pctx.upc
 	_ = r
 
-	wn, err := c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+	wn, err := c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	gopp.ErrPrint(err, wn)
 
 	// go io.Copy(c, upc)
@@ -558,14 +558,7 @@ func (this *Recow) dodirtxt(pctx *pcontext) error {
 	_ = r
 
 	reqstr := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, r.URL.Path)
-	reqstr += fmt.Sprintf("Host: %s\r\n", r.URL.Host)
-	for key, hline := range r.Header {
-		if key == "User-Agent" {
-			reqstr += fmt.Sprintf("%s: %s\r\n", key, hline[0])
-		} else {
-			reqstr += fmt.Sprintf("%s: %s\r\n", key, hline[0])
-		}
-	}
+	reqstr += rawEncodeHeader(filterHeader(r.Header), r.URL.Host)
 	reqstr += fmt.Sprintf("\r\n")
 	log.Print("> " + strings.Replace(reqstr, "\n", "\n> ", -1))
 	wn, err := upc.Write([]byte(reqstr))
@@ -608,14 +601,7 @@ func (this *Recow) dopxytxt(pctx *pcontext) error {
 
 	// 还原请求为字符串
 	reqstr := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, r.URL.String())
-	reqstr += fmt.Sprintf("Host: %s\r\n", r.URL.Host)
-	for key, hline := range r.Header {
-		if key == "User-Agent" {
-			reqstr += fmt.Sprintf("%s: %s/recow\r\n", key, hline[0])
-		} else {
-			reqstr += fmt.Sprintf("%s: %s\r\n", key, hline[0])
-		}
-	}
+	reqstr += rawEncodeHeader(filterHeader(r.Header), r.URL.Host)
 	reqstr += fmt.Sprintf("\r\n")
 	log.Println(reqstr)
 	_, err := upc.Write([]byte(reqstr))
@@ -631,6 +617,38 @@ func (this *Recow) dopxytxt(pctx *pcontext) error {
 	}
 
 	return err
+}
+
+func filterHeader(headers http.Header) http.Header {
+	var newhdrs = http.Header{}
+	for key, hline := range headers {
+		switch strings.ToLower(key) {
+		case "proxy-connect":
+		case "user-agent": // shorten UA
+			newhdrs[key] = []string{fmt.Sprintf("firefox %2drc", rand.Intn(50)+50)}
+		default:
+			newhdrs[key] = hline
+		}
+	}
+	return newhdrs
+}
+
+// \r\n seperated string
+func rawEncodeHeader(headers http.Header, host string) string {
+	str := ""
+	hashost := false
+	for key, hline := range headers {
+		if strings.ToLower(key) == "host" && host != "" {
+			hashost = true
+			str += fmt.Sprintf("%s: %s\r\n", key, host)
+		} else {
+			str += fmt.Sprintf("%s: %s\r\n", key, hline[0])
+		}
+	}
+	if !hashost && host != "" {
+		str += fmt.Sprintf("Host: %s\r\n", host)
+	}
+	return str
 }
 
 func main() {

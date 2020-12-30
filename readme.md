@@ -1,12 +1,14 @@
 
 ### Features
 
+* 非MITM，无需客户端信任中间证书
 * 自动根据IP国家分流
 * 支持HTTP/HTTPS 代理请求
 * 支持负载均衡，backup
 * 指定DNS服务器, udp,tcp,tls,doh,
 * DoH支持
 * ADblock by domain return 404
+* 随机User-Agent功能
 
 ### 上游代理负载均衡
 
