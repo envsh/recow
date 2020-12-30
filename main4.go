@@ -145,6 +145,7 @@ func (this *Recow) init() error {
 
 	this.lber = newBackupBalance()
 
+	log.Println("Parse ini", this.rcfile)
 	cfg, err := ini.ShadowLoad(this.rcfile)
 	gopp.ErrPrint(err, this.rcfile)
 	topsec := cfg.Section("")
@@ -157,7 +158,7 @@ func (this *Recow) init() error {
 			uo, err := url.Parse(vals[0])
 			gopp.ErrPrint(err)
 			// portstr := strings.Split(uo.Host, ":")[1]
-			uo.Host = "0.0.0.0:8050"
+			// uo.Host = "0.0.0.0:8050"
 			this.lsner, err = net.Listen("tcp", uo.Host)
 			gopp.ErrPrint(err)
 			log.Println("Listen on", uo.Host)
@@ -221,9 +222,10 @@ func (this *Recow) parseConfig() {
 	}
 }
 func (this *Recow) parserc() {
-
+	log.Println("Parse extend ini", this.rcfile+"2")
 }
 func (this *Recow) parseDirected() {
+	log.Println("Parse ini", this.directfile)
 	bcc, err := ioutil.ReadFile(this.directfile)
 	gopp.ErrPrint(err)
 	lines := strings.Split(string(bcc), "\n")
@@ -239,6 +241,7 @@ func (this *Recow) parseDirected() {
 	}
 }
 func (this *Recow) parseBlocked() {
+	log.Println("Parse ini", this.proxyfile)
 	bcc, err := ioutil.ReadFile(this.proxyfile)
 	gopp.ErrPrint(err)
 	lines := strings.Split(string(bcc), "\n")
